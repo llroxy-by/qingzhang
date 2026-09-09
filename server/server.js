@@ -154,8 +154,26 @@ function selectAll(table, userId) {
   return stmt.all(userId);
 }
 
-/** 合并客户端推送的一批行（last-write-wins by updated_at） */
-function mergeRows(table, userId, rows) {
+// 被改名表 → 引用它的（表, 列）：换 id 后同步重写这些引用
+const REFERRERS = {
+  accounts: [
+    ['snapshot_entries', 'account_id'],
+    ['txns', 'account_id'],
+  ],
+  snapshots: [['snapshot_entries', 'snapshot_id']],
+  trips: [['txns', 'trip_id']],
+};
+
+function genId() {
+  return crypto.randomUUID().replace(/-/g, '');
+}
+
+/**
+ * 合并客户端推送的一批行（last-write-wins by updated_at）。
+ * id 全局主键，若行 id 已被其他用户占用（如导入了别人的数据/旧数字 id），
+ * 为该行分配新随机 id 保留数据，并记入 renames（由调用方统一重写引用列）。
+ */
+function mergeRows(table, userId, rows, renames) {
   const meta = TABLES[table];
   const idCols = meta.cols.join(', ');
   const ph = meta.cols.map(() => '?').join(', ');
@@ -167,20 +185,50 @@ function mergeRows(table, userId, rows) {
     `UPDATE ${table} SET ${meta.cols.map((c) => `${c} = ?`).join(', ')}, updated_at = ?, deleted = ? WHERE id = ? AND user_id = ?`
   );
   let merged = 0;
+  let renamed = 0;
   for (const r of rows) {
     if (!r || typeof r.id !== 'string' || typeof r.updated_at !== 'number') continue;
     const existing = selectStmt.get(r.id, userId);
     const vals = meta.cols.map((c) => r[c] ?? null);
     if (!existing || (r.updated_at ?? 0) >= existing.updated_at) {
       if (!existing) {
-        insertStmt.run(r.id, userId, ...vals, r.updated_at ?? 0, r.deleted ? 1 : 0);
+        try {
+          insertStmt.run(r.id, userId, ...vals, r.updated_at ?? 0, r.deleted ? 1 : 0);
+        } catch (e) {
+          if (!/UNIQUE/.test(String(e && e.message || e))) throw e;
+          // 该 id 被其他用户占用：换新 id 保留本行数据
+          const newId = genId();
+          const map = renames.get(table) ?? new Map();
+          map.set(String(r.id), newId);
+          renames.set(table, map);
+          insertStmt.run(newId, userId, ...vals, r.updated_at ?? 0, r.deleted ? 1 : 0);
+          renamed++;
+        }
       } else {
         updateStmt.run(...vals, r.updated_at ?? 0, r.deleted ? 1 : 0, r.id, userId);
       }
       merged++;
     }
   }
-  return merged;
+  return { merged, renamed };
+}
+
+/** 应用 id 改名：把本用户所有引用旧 id 的列改为新 id（与本次 push 的其他行保持一致） */
+function applyRenames(userId, renames) {
+  let fixed = 0;
+  for (const [renamedTable, map] of renames) {
+    const referrers = REFERRERS[renamedTable] ?? [];
+    for (const [refTable, refCol] of referrers) {
+      const upd = db.prepare(
+        `UPDATE ${refTable} SET ${refCol} = ?, updated_at = ? WHERE user_id = ? AND ${refCol} = ?`
+      );
+      for (const [oldId, newId] of map) {
+        const r = upd.run(newId, now(), userId, oldId);
+        fixed += r.changes;
+      }
+    }
+  }
+  return fixed;
 }
 
 // ---------------- 用户（昵称 + 密码） ----------------
@@ -408,11 +456,27 @@ const server = http.createServer(async (req, res) => {
       if (req.method === 'POST') {
         const body = await readBody(req);
         const totals = {};
-        for (const table of Object.keys(TABLES)) {
-          const rows = Array.isArray(body[table]) ? body[table] : [];
-          totals[table] = mergeRows(table, userId, rows);
+        const renames = new Map();
+        db.exec('BEGIN');
+        try {
+          for (const table of Object.keys(TABLES)) {
+            const rows = Array.isArray(body[table]) ? body[table] : [];
+            totals[table] = mergeRows(table, userId, rows, renames);
+          }
+          const fixed = applyRenames(userId, renames);
+          db.exec('COMMIT');
+          // merged 兼容旧格式：每表 {merged, renamed}
+          const out = {};
+          for (const [k, v] of Object.entries(totals)) {
+            out[k] = v.merged + (v.renamed ?? 0);
+          }
+          if (fixed > 0) out.idFixed = fixed;
+          return json(res, 200, { merged: out, data: dumpAll(userId) });
+        } catch (e) {
+          try { db.exec('ROLLBACK'); } catch (_) {}
+          console.error('[sync error]', e && e.message || e);
+          return json(res, 500, { error: String(e && e.message || e) });
         }
-        return json(res, 200, { merged: totals, data: dumpAll(userId) });
       }
       return json(res, 405, { error: 'method not allowed' });
     }

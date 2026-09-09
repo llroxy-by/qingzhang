@@ -48,9 +48,12 @@ async function main() {
   });
   check('错误密码 401', rBad.status === 401, rBad.body);
 
-  console.log('== 4. 未带 token 访问数据 → 401 ==');
-  const noAuth = await api(`/api/data/${uid}`);
-  check('无凭证被拒', noAuth.status === 401, noAuth.body);
+  console.log('== 4. 写操作未带 token → 401 ==');
+  const noAuth = await api(`/api/data/${uid}`, { method: 'POST', body: j({}) });
+  check('无凭证写被拒', noAuth.status === 401, noAuth.body);
+  // Web 免登录只读：GET data/users 不需要 token；写操作(POST)才要
+  const readNo = await api(`/api/data/${uid}`, { method: 'GET' });
+  check('GET 只读免登录(Web 用)', readNo.status === 200, readNo.body);
 
   console.log('== 5. 推送全量数据（带 token） ==');
   const push1 = await api(`/api/data/${uid}`, {
@@ -106,7 +109,7 @@ async function main() {
   const lu = await api('/api/users', { token: tokenB });
   check('用户列表含两人', lu.body.users.length >= 2);
   const luNo = await api('/api/users');
-  check('用户列表需登录', luNo.status === 401);
+  check('用户列表免登录只读(Web 用)', luNo.status === 200, luNo.body);
 
   console.log('== 9. 清空数据（reset 权限） ==');
   const before = await api(`/api/data/${uid}`, { token: tokenA });
@@ -125,6 +128,48 @@ async function main() {
     body: j({ nickname: '冒烟用户A', password: 'pass-a1' }),
   });
   check('清空后仍可登录', relogin.status === 200 && relogin.body.token);
+
+  console.log('== 10. 跨账号同 id 冲突（UNIQUE 自动换 id 保数据） ==');
+  const rc = await api('/api/user/register', {
+    method: 'POST',
+    body: j({ nickname: '冒烟用户C', password: 'pass-c1' }),
+  });
+  const uidC = rc.body.user.id;
+  const tokenC = rc.body.token;
+  const ts = Date.now();
+  // 用户 A 先占用 dup-acc-1 / dup-snap-1 这两个全局 id
+  const occA = await api(`/api/data/${uid}`, {
+    method: 'POST', token: tokenA,
+    body: j({
+      accounts: [{ id: 'dup-acc-1', name: 'A占用', emoji: '💰', type: 'bank', sort_order: 0, is_active: 1, channel_keywords: '', opening_date: null, opening_cents: null, updated_at: ts, deleted: 0 }],
+      snapshots: [{ id: 'dup-snap-1', date: '2026-09-08', created_at: ts, updated_at: ts, deleted: 0 }],
+      snapshot_entries: [], txns: [], trips: [],
+    }),
+  });
+  check('A 先占用 id 成功', occA.status === 200, occA.body);
+  const accC = {
+    id: 'dup-acc-1', name: '撞id账户', emoji: '💰', type: 'bank',
+    sort_order: 0, is_active: 1, channel_keywords: '',
+    opening_date: null, opening_cents: null, updated_at: ts, deleted: 0,
+  };
+  const snapC = { id: 'dup-snap-1', date: '2026-09-09', created_at: ts, updated_at: ts, deleted: 0 };
+  const entryC = {
+    id: 'dup-entry-1', snapshot_id: 'dup-snap-1', account_id: 'dup-acc-1',
+    amount_cents: 1000, updated_at: ts, deleted: 0,
+  };
+  const pushC = await api(`/api/data/${uidC}`, {
+    method: 'POST', token: tokenC,
+    body: j({ accounts: [accC], snapshots: [snapC], snapshot_entries: [entryC], txns: [], trips: [] }),
+  });
+  check('C 推入撞 id 数据不 500', pushC.status === 200, pushC.body);
+  const dataC = await api(`/api/data/${uidC}`, { token: tokenC });
+  const gotAcc = dataC.body.accounts.find((a) => a.name === '撞id账户');
+  check('C 数据保留（换新 id）', !!gotAcc && gotAcc.id !== 'dup-acc-1', dataC.body.accounts);
+  const gotEntry = dataC.body.snapshot_entries[0];
+  const gotSnap = dataC.body.snapshots[0];
+  check('引用已联动重写(account_id/snapshot_id)',
+    gotEntry.account_id === gotAcc.id && gotEntry.snapshot_id === gotSnap.id,
+    JSON.stringify({ gotEntry, gotAcc, gotSnap }));
 
   console.log(failed === 0 ? '\n全部通过 ✅' : `\n${failed} 项失败 ❌`);
   process.exit(failed === 0 ? 0 : 1);
