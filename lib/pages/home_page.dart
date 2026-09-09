@@ -97,14 +97,20 @@ class _EmptyState extends StatelessWidget {
           children: [
             const Text('🌱', style: TextStyle(fontSize: 56)),
             const SizedBox(height: 16),
-            const Text('还没有快照记录',
-                style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600)),
+            Text(accounts.isEmpty ? '还没有资金构成' : '还没有快照记录',
+                style:
+                    const TextStyle(fontSize: 18, fontWeight: FontWeight.w600)),
             const SizedBox(height: 8),
-            Text(
-              '点右下角「记一笔快照」，把 ${accounts.map((a) => a.name).join('、')}\n的余额填进去，之后就能看到趋势和花销分析了',
-              textAlign: TextAlign.center,
-              style: TextStyle(color: Colors.grey.shade600, height: 1.6),
-            ),
+            if (accounts.isEmpty) ...[
+              Text('请到底部导航「设置」→ 资金构成 添加你的账户\n（如：招行卡、零钱通、基金…）\n添加后就能「记一笔快照」了',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: Colors.grey.shade600, height: 1.6)),
+            ] else
+              Text(
+                '点右下角「记一笔快照」，把 ${accounts.map((a) => a.name).join('、')}\n的余额填进去，之后就能看到趋势和花销分析了',
+                textAlign: TextAlign.center,
+                style: TextStyle(color: Colors.grey.shade600, height: 1.6),
+              ),
           ],
         ),
       ),

@@ -9,9 +9,11 @@ import '../main.dart';
 /// 同步模型：全量 push → 服务器按 updated_at last-write-wins 合并
 /// → 返回合并后全量 → 本地替换（服务器为权威，各端收敛一致）。
 class SyncService {
-  // 开源版默认空：请在 设置 → 账号与同步 → 点服务器地址 填自己的服务器。
-  // （自用分发版可在此内置服务器地址，如 http://xxx:8080）
-  static const defaultServer = '';
+  // 服务器地址默认空（开源版）：安装后到 设置 → 账号与同步 →「服务器地址」填写。
+  // 自用分发版构建时注入内置地址，无需手动填写：
+  //   flutter build apk --release --dart-define=QINGZHANG_SERVER=http://你的服务器:8080
+  static const defaultServer =
+      String.fromEnvironment('QINGZHANG_SERVER', defaultValue: '');
 
   static Future<String> serverUrl() async {
     final v = (await appState.db.getMeta('serverUrl')) ?? defaultServer;

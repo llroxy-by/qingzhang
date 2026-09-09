@@ -163,38 +163,7 @@ class AppDb {
     await db.execute(
         'CREATE INDEX idx_entries_snap ON snapshot_entries(snapshot_id) WHERE deleted = 0');
 
-    // 默认资金构成（用户实际账户）
-    final now = nowMillis();
-    await db.insert('accounts', {
-      'id': genUuid(), 'name': '基金', 'emoji': '📈', 'type': 'invest',
-      'sort_order': 0, 'is_active': 1, 'channel_keywords': '',
-      'updated_at': now, 'deleted': 0,
-    });
-    await db.insert('accounts', {
-      'id': genUuid(), 'name': '工行卡', 'emoji': '💳', 'type': 'bank',
-      'sort_order': 1, 'is_active': 1, 'channel_keywords': '',
-      'updated_at': now, 'deleted': 0,
-    });
-    await db.insert('accounts', {
-      'id': genUuid(), 'name': '招行卡', 'emoji': '💳', 'type': 'bank',
-      'sort_order': 2, 'is_active': 1, 'channel_keywords': '',
-      'updated_at': now, 'deleted': 0,
-    });
-    await db.insert('accounts', {
-      'id': genUuid(), 'name': '零钱通', 'emoji': '💰', 'type': 'wealth',
-      'sort_order': 3, 'is_active': 1, 'channel_keywords': '',
-      'updated_at': now, 'deleted': 0,
-    });
-    await db.insert('accounts', {
-      'id': genUuid(), 'name': '理财通', 'emoji': '💰', 'type': 'wealth',
-      'sort_order': 4, 'is_active': 1, 'channel_keywords': '',
-      'updated_at': now, 'deleted': 0,
-    });
-    await db.insert('accounts', {
-      'id': genUuid(), 'name': '币安', 'emoji': '₿', 'type': 'invest',
-      'sort_order': 5, 'is_active': 1, 'channel_keywords': '',
-      'updated_at': now, 'deleted': 0,
-    });
+    // 注意：不播种任何默认账户——资金构成由用户手动添加
   }
 
   // ==================== 元信息 ====================
@@ -531,7 +500,7 @@ class AppDb {
 
   // ==================== 重置 ====================
 
-  /// 清空全部数据并恢复默认资金构成
+  /// 清空全部数据（账户等由用户重新手动添加）
   Future<void> resetAllData() async {
     final db = await database;
     await db.transaction((txn) async {
@@ -540,29 +509,6 @@ class AppDb {
       }
       await txn.delete('category_rules');
       await txn.delete('meta');
-      // 重新种子默认账户
-      final now = nowMillis();
-      final seeds = [
-        ('基金', '📈', 'invest', 0),
-        ('工行卡', '💳', 'bank', 1),
-        ('招行卡', '💳', 'bank', 2),
-        ('零钱通', '💰', 'wealth', 3),
-        ('理财通', '💰', 'wealth', 4),
-        ('币安', '₿', 'invest', 5),
-      ];
-      for (final (name, emoji, type, order) in seeds) {
-        await txn.insert('accounts', {
-          'id': genUuid(),
-          'name': name,
-          'emoji': emoji,
-          'type': type,
-          'sort_order': order,
-          'is_active': 1,
-          'channel_keywords': '',
-          'updated_at': now,
-          'deleted': 0,
-        });
-      }
     });
   }
 

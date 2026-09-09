@@ -109,6 +109,12 @@ class _SnapshotEditPageState extends State<SnapshotEditPage> {
   }
 
   Future<void> _save() async {
+    if (_accounts.isEmpty) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('请先到 设置 → 资金构成 添加账户')));
+      return;
+    }
     final entries = <SnapshotEntry>[];
     for (final a in _accounts) {
       final v = parseYuanToCents(_controllers[a.id!]?.text ?? '');
@@ -127,6 +133,32 @@ class _SnapshotEditPageState extends State<SnapshotEditPage> {
   Widget build(BuildContext context) {
     if (!_loaded) {
       return const Scaffold(body: Center(child: CircularProgressIndicator()));
+    }
+    if (_accounts.isEmpty) {
+      // 还没有任何账户：先去设置添加资金构成
+      return Scaffold(
+        appBar: AppBar(title: const Text('记一笔快照')),
+        body: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(32),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                const Text('💳', style: TextStyle(fontSize: 48)),
+                const SizedBox(height: 12),
+                const Text('还没有资金构成',
+                    style: TextStyle(
+                        fontSize: 16, fontWeight: FontWeight.w600)),
+                const SizedBox(height: 8),
+                Text('请先到底部「设置」→ 资金构成 添加你的账户\n（如：招行卡、零钱通…）',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                        color: Colors.grey.shade600, height: 1.6)),
+              ],
+            ),
+          ),
+        ),
+      );
     }
     final refIsSameDay =
         _reference != null && _reference!.date == _dateStr;

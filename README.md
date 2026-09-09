@@ -32,22 +32,68 @@ flutter run          # 或 flutter build apk --release
 
 > 开源版默认不带服务器地址：安装后到 **设置 → 账号与同步 → 点「服务器地址」** 填写自己部署的服务器（见下）。
 
-### 2. 服务器（可选，云端同步 + Web）
+### 2. 服务器部署指南（云端同步 + Web）
 
-零依赖 Node 服务器，仅需 Node.js ≥ 22（内置 SQLite）：
+服务端是**零依赖 Node 应用**（仅用内置 `http` + `node:sqlite`），Node.js ≥ 22 即可，不需要 npm install（仅"邮箱账单"可选功能需要装一个 imapflow）。
+
+**① 准备 Node.js**
+
+- Windows：下载 node-v22 win-x64 zip，解压到 `E:\server\node-v22.x` 之类目录
+- macOS/Linux：官网 pkg 或 `nvm install 22`
+- 检查：`node -v` 输出 v22+
+
+**② 启动服务**
 
 ```bash
 cd server
-node server.js        # 默认 8080，环境变量 PORT 可改
+node server.js          # 默认监听 8080，改端口用环境变量：PORT=9090 node server.js
 ```
 
-服务器同时托管：
-- REST API：注册/登录/同步/清空/邮件（见下方 API 摘要）
-- Web 只读端：把 `flutter build web --target=lib/main_web.dart` 产物拷入 `server/web/` 后同端口访问
+启动日志会打印监听地址与数据目录；数据存在 `server/data/qingzhang.db`（SQLite 单文件，备份=拷走这个文件）。
 
-公网暴露：可用 frp / ngrok 等 TCP 隧道把 8080 映射到公网（国内服务器直连需备案，建议境外节点）。
+可选邮箱账单模块（拉 QQ 邮箱里的银行账单附件）：
 
-**邮箱账单功能**（可选）：`npm install imapflow` 后服务器自动启用；在 App 的 导入页 → 从邮箱获取 中填写 QQ 邮箱与授权码（授权码仅存服务器本地 `server/data/mail_config.json`，用于 IMAP 收信）。
+```bash
+cd server && npm install imapflow
+# 重启服务后在 App 导入页「从邮箱获取」填写 QQ 邮箱 + 授权码即可
+# （授权码保存在服务器本地 data/mail_config.json）
+```
+
+自测：服务起来后另开终端跑 `node test.js`（端到端 20 项：注册/登录/同步/权限隔离）。
+
+**③ 手机 App 连上它**
+
+App 端两种情况：
+
+- 自己构建 App：`flutter build apk --release --dart-define=QINGZHANG_SERVER=http://你的服务器:8080`（内置地址，免填）
+- 使用开源默认包：安装后 设置 → 账号与同步 → 点「服务器地址」填入 `http://你的服务器:8080`
+
+**④ 让公网能访问（手机在外面也能同步/看 Web）**
+
+服务器要能被公网访问，任选：
+
+- 有公网 IP 的 VPS：直接部署在上面，安全组放行端口
+- 家用/公司内网：用 frp / ngrok / Tailscale Funnel 之类把 8080 暴露出去。
+  例（frp）：`frpc.ini` 里 `remote_port = 8080` + `server_addr` 指向你的 frps；外网地址形如 `http://xxx.ofalias.com:8080`。填 App 的服务器地址用这个公网地址。
+- ⚠️ 国内云服务器直连公网需要 ICP 备案（未备案的 IP 访问 80/8080 可能被拦截），建议放境外节点或用 HTTPS 域名。
+
+**⑤ （可选）注册成 Windows 开机自启服务**
+
+```powershell
+# 用 NSSM（https://nssm.cc）把 node server.js 注册为服务
+nssm install qingzhang "E:\server\node.exe" "E:\server\server.js"
+nssm set qingzhang AppDirectory E:\server
+nssm start qingzhang
+```
+
+**⑥ Web 只读端**
+
+```bash
+flutter build web --target=lib/main_web.dart
+# 把 build/web/ 下所有文件拷到服务器 server/web/（覆盖），重启服务即可
+```
+
+之后访问 `http://你的服务器:8080/` 就是免登录只读报表（总资产/趋势/分类大头/旅程/流水）。
 
 ### API 摘要
 
