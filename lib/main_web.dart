@@ -112,6 +112,9 @@ class _WebHomeState extends State<WebHome> {
       setState(() => _users = users);
       if (users.isEmpty) {
         setState(() => _error = '还没有任何用户（手机 App 设置昵称并同步后会出现）');
+      } else if (_current == null) {
+        // 自动进入第一个用户（免登录直接看报表；下拉可切换）
+        _selectUser(users.first);
       }
     } catch (e) {
       setState(() => _error = '无法连接服务器：$e\n\n服务器地址：${_apiBase()}');
