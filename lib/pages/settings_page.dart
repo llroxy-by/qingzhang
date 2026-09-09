@@ -84,6 +84,28 @@ class SettingsPage extends StatelessWidget {
                 );
               },
             ),
+            // 个人符号与签名
+            const SizedBox(height: 26),
+            Opacity(
+              opacity: 0.9,
+              child: Image.asset(
+                'assets/sign/symbol.png',
+                width: 60,
+                height: 60,
+                fit: BoxFit.contain,
+              ),
+            ),
+            const SizedBox(height: 10),
+            Opacity(
+              opacity: 0.85,
+              child: Image.asset(
+                'assets/sign/signature.png',
+                width: 120,
+                height: 56,
+                fit: BoxFit.contain,
+              ),
+            ),
+            const SizedBox(height: 8),
           ],
         ),
       ),
