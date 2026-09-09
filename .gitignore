@@ -1,0 +1,19 @@
+# --- Dart / Flutter ---
+.dart_tool/
+build/
+.flutter-plugins
+.flutter-plugins-dependencies
+*.iml
+.idea/
+*.dart_tool
+
+# --- 本地数据（不入库） ---
+server/node_modules/
+server/data/
+*.db
+*.db-journal
+*.sqlite
+
+# --- 系统 / 其它 ---
+.DS_Store
+*.log
