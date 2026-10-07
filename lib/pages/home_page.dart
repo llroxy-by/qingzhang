@@ -2,9 +2,11 @@ import 'package:flutter/material.dart';
 
 import '../main.dart';
 import '../models/account.dart';
+import '../models/debt.dart';
 import '../models/snapshot.dart';
 import '../utils/format.dart';
 import '../widgets/quick_txn_sheet.dart';
+import 'debts_page.dart';
 import 'snapshot_edit_page.dart';
 
 class HomePage extends StatelessWidget {
@@ -57,7 +59,7 @@ class HomePage extends StatelessWidget {
             if (!snap.hasData) {
               return const Center(child: CircularProgressIndicator());
             }
-            final (accounts, snapshots) = snap.data!;
+            final (accounts, snapshots, debts) = snap.data!;
             if (snapshots.isEmpty) {
               return _EmptyState(accounts: accounts);
             }
@@ -68,6 +70,7 @@ class HomePage extends StatelessWidget {
               accounts: accounts,
               latest: latest,
               prev: prev,
+              debts: debts,
             );
           },
         ),
@@ -75,11 +78,12 @@ class HomePage extends StatelessWidget {
     );
   }
 
-  Future<(List<Account>, List<Snapshot>)> _load() async {
+  Future<(List<Account>, List<Snapshot>, List<Debt>)> _load() async {
     final db = appState.db;
     final accounts = await db.listAccounts(onlyActive: true);
     final snapshots = await db.listSnapshots();
-    return (accounts, snapshots);
+    final debts = await db.listDebts();
+    return (accounts, snapshots, debts);
   }
 }
 
@@ -122,16 +126,24 @@ class _Overview extends StatelessWidget {
   final List<Account> accounts;
   final Snapshot latest;
   final Snapshot? prev;
+  final List<Debt> debts;
 
   const _Overview({
     required this.accounts,
     required this.latest,
     required this.prev,
+    required this.debts,
   });
 
   @override
   Widget build(BuildContext context) {
     final diff = prev == null ? null : latest.totalCents - prev!.totalCents;
+    final liquid = accounts
+        .where((a) => a.isLiquid)
+        .fold<int>(0, (s, a) => s + (latest.amountOf(a.id!) ?? 0));
+    final dead = accounts
+        .where((a) => !a.isLiquid)
+        .fold<int>(0, (s, a) => s + (latest.amountOf(a.id!) ?? 0));
 
     return ListView(
       padding: const EdgeInsets.fromLTRB(16, 12, 16, 96),
@@ -151,7 +163,15 @@ class _Overview extends StatelessWidget {
           ],
         ),
         const SizedBox(height: 12),
-        _TotalCard(total: latest.totalCents, diff: diff, latestDate: latest.date),
+        _TotalCard(
+          total: latest.totalCents,
+          diff: diff,
+          latestDate: latest.date,
+          liquid: liquid,
+          dead: dead,
+        ),
+        const SizedBox(height: 12),
+        _DebtCard(debts: debts),
         const SizedBox(height: 12),
         // 随手记一笔（不导银行流水时补刷卡/大额消费）
         OutlinedButton.icon(
@@ -185,11 +205,11 @@ class _Overview extends StatelessWidget {
           ],
         ),
         const SizedBox(height: 8),
-        ...accounts.map((a) => _AccountTile(
-              account: a,
-              amount: latest.amountOf(a.id!),
-              prevAmount: prev?.amountOf(a.id!),
-            )),
+        ..._accountGroup(context, '活钱', accounts.where((a) => a.isLiquid).toList(), latest, prev),
+        if (accounts.any((a) => !a.isLiquid)) ...[
+          const SizedBox(height: 8),
+          ..._accountGroup(context, '死钱', accounts.where((a) => !a.isLiquid).toList(), latest, prev),
+        ],
         if (prev != null) ...[
           const SizedBox(height: 12),
           Card(
@@ -215,14 +235,55 @@ class _Overview extends StatelessWidget {
       ],
     );
   }
+
+  /// 一组账户（活钱/死钱）：组标题 + 小计 + 账户卡片
+  List<Widget> _accountGroup(BuildContext context, String label,
+      List<Account> group, Snapshot latest, Snapshot? prev) {
+    if (group.isEmpty) return const [];
+    final subtotal =
+        group.fold<int>(0, (s, a) => s + (latest.amountOf(a.id!) ?? 0));
+    final teal = const Color(0xFF00897B);
+    final purple = const Color(0xFF7B1FA2);
+    final color = label == '活钱' ? teal : purple;
+    return [
+      Padding(
+        padding: const EdgeInsets.only(bottom: 6),
+        child: Row(
+          children: [
+            Icon(label == '活钱' ? Icons.water_drop_outlined : Icons.lock_outline,
+                size: 15, color: color),
+            const SizedBox(width: 6),
+            Text('$label 小计',
+                style: TextStyle(
+                    fontSize: 13, fontWeight: FontWeight.w600, color: color)),
+            const Spacer(),
+            Text('¥ ${fmtCents(subtotal)}',
+                style: TextStyle(
+                    fontSize: 13, fontWeight: FontWeight.w600, color: color)),
+          ],
+        ),
+      ),
+      ...group.map((a) => _AccountTile(
+            account: a,
+            amount: latest.amountOf(a.id!),
+            prevAmount: prev?.amountOf(a.id!),
+          )),
+    ];
+  }
 }
 
 class _TotalCard extends StatelessWidget {
   final int total;
   final int? diff;
   final String latestDate;
+  final int liquid; // 活钱合计（分）
+  final int dead; // 死钱合计（分）
   const _TotalCard(
-      {required this.total, required this.diff, required this.latestDate});
+      {required this.total,
+      required this.diff,
+      required this.latestDate,
+      required this.liquid,
+      required this.dead});
 
   @override
   Widget build(BuildContext context) {
@@ -279,7 +340,133 @@ class _TotalCard extends StatelessWidget {
                 ],
               ),
             ),
+          const SizedBox(height: 16),
+          Container(height: 1, color: const Color(0x33FFFFFF)),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(
+                child: _LiquidStat(
+                    label: '活钱 · 随时能花', amount: liquid),
+              ),
+              Container(
+                  width: 1, height: 32, color: const Color(0x33FFFFFF)),
+              Expanded(
+                child: _LiquidStat(
+                    label: '死钱 · 短期取不出', amount: dead),
+              ),
+            ],
+          ),
         ],
+      ),
+    );
+  }
+}
+
+class _LiquidStat extends StatelessWidget {
+  final String label;
+  final int amount;
+  const _LiquidStat({required this.label, required this.amount});
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        Text(label,
+            style: const TextStyle(color: Colors.white70, fontSize: 11)),
+        const SizedBox(height: 4),
+        Text('¥ ${fmtCents(amount)}',
+            style: const TextStyle(
+                color: Colors.white,
+                fontSize: 15,
+                fontWeight: FontWeight.w700)),
+      ],
+    );
+  }
+}
+
+/// 欠债摘要卡：未结清的我欠/别人欠我/净额；点击进入欠债管理
+class _DebtCard extends StatelessWidget {
+  final List<Debt> debts;
+  const _DebtCard({required this.debts});
+
+  @override
+  Widget build(BuildContext context) {
+    final unsettled = debts.where((d) => !d.settled).toList();
+    var owe = 0;
+    var lend = 0;
+    for (final d in unsettled) {
+      if (d.direction == DebtDirection.owe) {
+        owe += d.amountCents;
+      } else {
+        lend += d.amountCents;
+      }
+    }
+    final net = owe - lend;
+    final hasDebt = owe > 0 || lend > 0;
+
+    return Card(
+      child: InkWell(
+        borderRadius: BorderRadius.circular(16),
+        onTap: () => Navigator.of(context).push(
+          MaterialPageRoute(builder: (_) => const DebtPage()),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.all(14),
+          child: Row(
+            children: [
+              Container(
+                width: 40,
+                height: 40,
+                decoration: BoxDecoration(
+                  color: const Color(0xFFE05B4B).withValues(alpha: 0.1),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                alignment: Alignment.center,
+                child: const Icon(Icons.swap_vert,
+                    color: Color(0xFFE05B4B), size: 22),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: hasDebt
+                    ? Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            children: [
+                              Text('我欠 ¥ ${fmtCents(owe)}',
+                                  style: const TextStyle(
+                                      fontSize: 14,
+                                      fontWeight: FontWeight.w700,
+                                      color: Color(0xFFE05B4B))),
+                              const SizedBox(width: 12),
+                              Text('别人欠我 ¥ ${fmtCents(lend)}',
+                                  style: const TextStyle(
+                                      fontSize: 14,
+                                      fontWeight: FontWeight.w700,
+                                      color: Color(0xFF2E9E5B))),
+                            ],
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            net > 0
+                                ? '净欠 ¥ ${fmtCents(net)} · 规划花销记得留出来'
+                                : net < 0
+                                    ? '净应收 ¥ ${fmtCents(-net)}，还有 ${unsettled.length} 笔没结'
+                                    : '${unsettled.length} 笔未结清，两清状态',
+                            style: TextStyle(
+                                color: Colors.grey.shade600, fontSize: 12),
+                          ),
+                        ],
+                      )
+                    : Text('还没有欠债记录，点这里记一笔',
+                        style: TextStyle(
+                            color: Colors.grey.shade500, fontSize: 13)),
+              ),
+              const Icon(Icons.chevron_right, color: Colors.grey),
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -313,7 +500,8 @@ class _AccountTile extends StatelessWidget {
         ),
         title: Text(account.name,
             style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 15)),
-        subtitle: Text(account.type.label,
+        subtitle: Text(
+            '${account.isLiquid ? '活钱' : '死钱'} · ${account.type.label}',
             style: TextStyle(color: Colors.grey.shade500, fontSize: 12)),
         trailing: Column(
           mainAxisAlignment: MainAxisAlignment.center,

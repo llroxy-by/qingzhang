@@ -2,18 +2,20 @@ import 'package:path/path.dart' as p;
 import 'package:sqflite/sqflite.dart';
 
 import '../models/account.dart';
+import '../models/debt.dart';
 import '../models/snapshot.dart';
 import '../models/trip.dart';
 import '../models/txn.dart';
 import '../utils/uuid.dart';
 
-/// 轻账本地数据库 v4：
+/// 轻账本地数据库 v5：
 /// - 业务表主键为 uuid（与云端一致，跨设备同步）
 /// - 所有写操作带 updated_at（毫秒），删除为软删（deleted=1，保留 tombstone 供同步）
 /// - 云端同步：push 全量 → 服务器 last-write-wins 合并 → 返回全量 → 本地替换
+/// - v5：accounts 增加 is_liquid（活钱/死钱）；新增 debts（欠债）表
 class AppDb {
   static const _dbName = 'qingzhang.db';
-  static const _dbVersion = 4;
+  static const _dbVersion = 5;
 
   /// 与服务器同步的业务表（服务器按这些表合并）
   static const syncTables = [
@@ -22,6 +24,7 @@ class AppDb {
     'snapshot_entries',
     'txns',
     'trips',
+    'debts',
   ];
 
   Database? _db;
@@ -42,7 +45,8 @@ class AppDb {
   /// 兜底自检：不依赖 user_version。
   /// v1.6.0 曾把旧库的版本号标成 4 而未迁移表结构（无 onUpgrade），
   /// 导致后续版本号的升级钩子不触发、查询报 no such column: deleted。
-  /// 这里每次打开检查 accounts 是否含 v4 的 deleted 列，旧结构一律重建。
+  /// 这里每次打开检查 accounts 是否含 v4 的 deleted 列，旧结构一律重建；
+  /// v5 增量（is_liquid 列、debts 表）幂等补齐，不动已有数据。
   Future<void> _ensureSchema(Database db) async {
     final tables = await db.rawQuery(
         "SELECT name FROM sqlite_master WHERE type='table' AND name='accounts'");
@@ -55,6 +59,20 @@ class AppDb {
     final hasDeleted = cols.any((c) => c['name'] == 'deleted');
     if (!hasDeleted) {
       await _dropAllAndRecreate(db);
+      return;
+    }
+    // v5：is_liquid 列（老库 ALTER 补齐；投资类默认死钱）
+    final hasLiquid = cols.any((c) => c['name'] == 'is_liquid');
+    if (!hasLiquid) {
+      await db.execute(
+          'ALTER TABLE accounts ADD COLUMN is_liquid INTEGER NOT NULL DEFAULT 1');
+      await db.execute("UPDATE accounts SET is_liquid = 0 WHERE type = 'invest'");
+    }
+    // v5：debts 表
+    final debtTables = await db.rawQuery(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='debts'");
+    if (debtTables.isEmpty) {
+      await _createDebtsTable(db);
     }
   }
 
@@ -64,6 +82,7 @@ class AppDb {
     await db.execute('DROP TABLE IF EXISTS snapshot_entries');
     await db.execute('DROP TABLE IF EXISTS txns');
     await db.execute('DROP TABLE IF EXISTS trips');
+    await db.execute('DROP TABLE IF EXISTS debts');
     await db.execute('DROP TABLE IF EXISTS category_rules');
     await db.execute('DROP TABLE IF EXISTS meta');
     await _createSchemaAndSeed(db);
@@ -78,7 +97,34 @@ class AppDb {
     // 旧结构（v1~v3）无法平滑迁移，按约定直接重建（旧数据由用户重新导入）。
     if (oldV < 4) {
       await _dropAllAndRecreate(db);
+      return;
     }
+    // v4 → v5：非破坏性增量（补列 + 新表）
+    if (oldV < 5) {
+      await db.execute(
+          'ALTER TABLE accounts ADD COLUMN is_liquid INTEGER NOT NULL DEFAULT 1');
+      await db.execute("UPDATE accounts SET is_liquid = 0 WHERE type = 'invest'");
+      await _createDebtsTable(db);
+    }
+  }
+
+  Future<void> _createDebtsTable(Database db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS debts(
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        direction TEXT NOT NULL DEFAULT 'owe',
+        amount_cents INTEGER NOT NULL,
+        date TEXT NOT NULL,
+        note TEXT NOT NULL DEFAULT '',
+        settled INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL DEFAULT 0,
+        updated_at INTEGER NOT NULL DEFAULT 0,
+        deleted INTEGER NOT NULL DEFAULT 0
+      )
+    ''');
+    await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_debts_date ON debts(date) WHERE deleted = 0');
   }
 
   Future<void> _createSchemaAndSeed(Database db) async {
@@ -90,6 +136,7 @@ class AppDb {
         type TEXT NOT NULL DEFAULT 'bank',
         sort_order INTEGER NOT NULL DEFAULT 0,
         is_active INTEGER NOT NULL DEFAULT 1,
+        is_liquid INTEGER NOT NULL DEFAULT 1,
         channel_keywords TEXT NOT NULL DEFAULT '',
         opening_date TEXT,
         opening_cents INTEGER,
@@ -143,6 +190,7 @@ class AppDb {
         deleted INTEGER NOT NULL DEFAULT 0
       )
     ''');
+    await _createDebtsTable(db);
     await db.execute('''
       CREATE TABLE category_rules(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -368,6 +416,54 @@ class AppDb {
           where: 'id = ?', whereArgs: [id]);
     }
     await batch.commit(noResult: true);
+  }
+
+  // ==================== 欠债 ====================
+
+  Future<List<Debt>> listDebts({bool onlyUnsettled = false}) async {
+    final db = await database;
+    final rows = await db.query(
+      'debts',
+      where: onlyUnsettled ? 'settled = 0 AND deleted = 0' : 'deleted = 0',
+      orderBy: 'date DESC, id DESC',
+    );
+    return rows.map(Debt.fromMap).toList();
+  }
+
+  Future<String> insertDebt(Debt d) async {
+    final db = await database;
+    final id = genUuid();
+    final now = nowMillis();
+    await db.insert('debts', {
+      ...d.toMap()
+        ..remove('id')
+        ..remove('created_at')
+        ..remove('updated_at')
+        ..remove('deleted'),
+      'id': id,
+      'created_at': now,
+      'updated_at': now,
+      'deleted': 0,
+    });
+    return id;
+  }
+
+  Future<void> updateDebt(Debt d) async {
+    final db = await database;
+    final row = d.toMap()
+      ..remove('id')
+      ..remove('created_at')
+      ..remove('updated_at')
+      ..remove('deleted');
+    await db.update('debts', {...row, 'updated_at': nowMillis()},
+        where: 'id = ?', whereArgs: [d.id]);
+  }
+
+  /// 软删除一笔欠债（同步用 tombstone 保留）
+  Future<void> deleteDebt(String id) async {
+    final db = await database;
+    await db.update('debts', {'deleted': 1, 'updated_at': nowMillis()},
+        where: 'id = ?', whereArgs: [id]);
   }
 
   // ==================== 流水 ====================

@@ -42,7 +42,7 @@ class AnalysisPage extends StatelessWidget {
                     style: TextStyle(fontSize: 24, fontWeight: FontWeight.w800)),
                 const SizedBox(height: 12),
                 if (snapshotsAsc.length >= 2) ...[
-                  _TrendCard(snapshots: snapshotsAsc),
+                  _TrendCard(snapshots: snapshotsAsc, accounts: accounts),
                   const SizedBox(height: 16),
                   _CompositionCard(
                       accounts: accounts, latest: snapshotsAsc.last),
@@ -168,13 +168,39 @@ class _AnalysisEmpty extends StatelessWidget {
 
 class _TrendCard extends StatelessWidget {
   final List<Snapshot> snapshots;
-  const _TrendCard({required this.snapshots});
+  final List<Account> accounts;
+  const _TrendCard({required this.snapshots, required this.accounts});
 
   @override
   Widget build(BuildContext context) {
-    final pts = snapshots.indexed.toList();
-    final maxV = snapshots.map((s) => s.totalCents).reduce((a, b) => a > b ? a : b) / 100;
-    final minV = snapshots.map((s) => s.totalCents).reduce((a, b) => a < b ? a : b) / 100;
+    const teal = Color(0xFF00897B);
+    const purple = Color(0xFF7B1FA2);
+
+    // 每条快照拆活钱/死钱：活钱 = 活钱账户余额和，死钱 = 死钱账户余额和
+    final liquidSpots = <FlSpot>[];
+    final deadSpots = <FlSpot>[];
+    var minV = double.infinity;
+    var maxV = double.negativeInfinity;
+    for (final (i, s) in snapshots.indexed) {
+      var liq = 0;
+      var dead = 0;
+      for (final a in accounts.where((a) => a.isActive)) {
+        final amt = s.amountOf(a.id!) ?? 0;
+        if (a.isLiquid) {
+          liq += amt;
+        } else {
+          dead += amt;
+        }
+      }
+      liquidSpots.add(FlSpot(i.toDouble(), liq / 100));
+      deadSpots.add(FlSpot(i.toDouble(), dead / 100));
+      if (liq < minV) minV = liq.toDouble();
+      if (liq > maxV) maxV = liq.toDouble();
+      if (dead < minV) minV = dead.toDouble();
+      if (dead > maxV) maxV = dead.toDouble();
+    }
+    if (minV == double.infinity) minV = 0;
+    if (maxV == double.negativeInfinity) maxV = 0;
     final pad = ((maxV - minV) * 0.15).clamp(50.0, 5000.0);
 
     return Card(
@@ -183,7 +209,7 @@ class _TrendCard extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('总资产趋势',
+            Text('资产趋势（活钱 / 死钱）',
                 style: TextStyle(
                     fontSize: 16,
                     fontWeight: FontWeight.w700,
@@ -191,7 +217,31 @@ class _TrendCard extends StatelessWidget {
             const SizedBox(height: 4),
             Text('${fmtDate(snapshots.first.date)} ~ ${fmtDate(snapshots.last.date)} · ${snapshots.length} 次记录',
                 style: TextStyle(color: Colors.grey.shade500, fontSize: 12)),
-            const SizedBox(height: 16),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                Container(
+                  width: 10,
+                  height: 10,
+                  decoration: BoxDecoration(
+                      color: teal, borderRadius: BorderRadius.circular(3)),
+                ),
+                const SizedBox(width: 4),
+                Text('活钱（随时能花）',
+                    style: TextStyle(color: Colors.grey.shade600, fontSize: 12)),
+                const SizedBox(width: 14),
+                Container(
+                  width: 10,
+                  height: 10,
+                  decoration: BoxDecoration(
+                      color: purple, borderRadius: BorderRadius.circular(3)),
+                ),
+                const SizedBox(width: 4),
+                Text('死钱（短期取不出）',
+                    style: TextStyle(color: Colors.grey.shade600, fontSize: 12)),
+              ],
+            ),
+            const SizedBox(height: 12),
             SizedBox(
               height: 180,
               child: LineChart(
@@ -244,29 +294,27 @@ class _TrendCard extends StatelessWidget {
                     touchTooltipData: LineTouchTooltipData(
                       getTooltipItems: (spots) => spots
                           .map((s) => LineTooltipItem(
-                                '¥ ${fmtCents((s.y * 100).round())}',
+                                '${s.barIndex == 0 ? '活钱' : '死钱'} ¥ ${fmtCents((s.y * 100).round())}',
                                 const TextStyle(
                                     color: Colors.white,
-                                    fontWeight: FontWeight.w600)),
-                              )
+                                    fontWeight: FontWeight.w600,
+                                    fontSize: 12),
+                              ))
                           .toList(),
                     ),
                   ),
                   lineBarsData: [
                     LineChartBarData(
-                      spots: pts
-                          .map((e) =>
-                              FlSpot(e.$1.toDouble(), e.$2.totalCents / 100))
-                          .toList(),
+                      spots: liquidSpots,
                       isCurved: true,
                       curveSmoothness: 0.25,
-                      color: const Color(0xFF00897B),
+                      color: teal,
                       barWidth: 3,
                       dotData: FlDotData(
                         getDotPainter: (spot, percent, bar, index) =>
                             FlDotCirclePainter(
                           radius: 3.5,
-                          color: const Color(0xFF00897B),
+                          color: teal,
                           strokeWidth: 2,
                           strokeColor: Colors.white,
                         ),
@@ -274,6 +322,26 @@ class _TrendCard extends StatelessWidget {
                       belowBarData: BarAreaData(
                         show: true,
                         color: const Color(0x2200897B),
+                      ),
+                    ),
+                    LineChartBarData(
+                      spots: deadSpots,
+                      isCurved: true,
+                      curveSmoothness: 0.25,
+                      color: purple,
+                      barWidth: 2.5,
+                      dotData: FlDotData(
+                        getDotPainter: (spot, percent, bar, index) =>
+                            FlDotCirclePainter(
+                          radius: 3,
+                          color: purple,
+                          strokeWidth: 2,
+                          strokeColor: Colors.white,
+                        ),
+                      ),
+                      belowBarData: BarAreaData(
+                        show: true,
+                        color: const Color(0x1F7B1FA2),
                       ),
                     ),
                   ],
@@ -303,6 +371,15 @@ class _CompositionCard extends StatelessWidget {
     }
     if (slices.isEmpty) return const SizedBox.shrink();
     final total = slices.fold<int>(0, (s, e) => s + e.$2);
+    var liquidSum = 0;
+    var deadSum = 0;
+    for (final (a, amt) in slices) {
+      if (a.isLiquid) {
+        liquidSum += amt;
+      } else {
+        deadSum += amt;
+      }
+    }
 
     const colors = [
       Color(0xFF00897B), Color(0xFFF9A825), Color(0xFF1565C0),
@@ -321,6 +398,35 @@ class _CompositionCard extends StatelessWidget {
                     fontSize: 16,
                     fontWeight: FontWeight.w700,
                     color: Colors.grey.shade800)),
+            const SizedBox(height: 6),
+            // 活钱 / 死钱汇总
+            Row(
+              children: [
+                Container(
+                  width: 10,
+                  height: 10,
+                  decoration: BoxDecoration(
+                      color: const Color(0xFF00897B),
+                      borderRadius: BorderRadius.circular(3)),
+                ),
+                const SizedBox(width: 4),
+                Text('活钱 ¥ ${fmtCents(liquidSum)}',
+                    style: const TextStyle(
+                        fontSize: 13, fontWeight: FontWeight.w600)),
+                const SizedBox(width: 14),
+                Container(
+                  width: 10,
+                  height: 10,
+                  decoration: BoxDecoration(
+                      color: const Color(0xFF7B1FA2),
+                      borderRadius: BorderRadius.circular(3)),
+                ),
+                const SizedBox(width: 4),
+                Text('死钱 ¥ ${fmtCents(deadSum)}',
+                    style: const TextStyle(
+                        fontSize: 13, fontWeight: FontWeight.w600)),
+              ],
+            ),
             const SizedBox(height: 12),
             Row(
               children: [

@@ -9,6 +9,7 @@ import '../models/account.dart';
 import '../models/categories.dart';
 import '../services/sync_service.dart';
 import '../utils/format.dart';
+import 'debts_page.dart';
 
 class SettingsPage extends StatelessWidget {
   final int tick;
@@ -31,6 +32,17 @@ class SettingsPage extends StatelessWidget {
             const _SectionHeader('资金构成'),
             const SizedBox(height: 8),
             _AccountsCard(),
+            const SizedBox(height: 20),
+            const _SectionHeader('欠债'),
+            const SizedBox(height: 8),
+            _buildCard(
+              context,
+              icon: Icons.swap_vert,
+              title: '欠债管理',
+              subtitle: '记录欠了谁 / 谁欠了你，总览页会汇总未结清的',
+              onTap: () => Navigator.of(context).push(
+                  MaterialPageRoute(builder: (_) => const DebtPage())),
+            ),
             const SizedBox(height: 20),
             const _SectionHeader('分类'),
             const SizedBox(height: 8),
@@ -785,6 +797,8 @@ class _AccountDialogState extends State<_AccountDialog> {
   late final TextEditingController _openingAmount;
   late AccountType _type;
   late bool _active;
+  late bool _liquid;
+  bool _liquidManual = false;
   bool _openingEnabled = false;
   DateTime? _openingDate;
 
@@ -802,6 +816,7 @@ class _AccountDialogState extends State<_AccountDialog> {
             : '');
     _type = a?.type ?? AccountType.bank;
     _active = a?.isActive ?? true;
+    _liquid = a?.isLiquid ?? (a?.type ?? AccountType.bank).defaultLiquid;
     _openingEnabled = a?.openingDate != null;
     _openingDate = a?.openingDate != null
         ? DateTime.parse(a!.openingDate!)
@@ -866,11 +881,48 @@ class _AccountDialogState extends State<_AccountDialog> {
                       for (final t in AccountType.values)
                         DropdownMenuItem(value: t, child: Text(t.label)),
                     ],
-                    onChanged: (v) =>
-                        setState(() => _type = v ?? AccountType.other),
+                    onChanged: (v) => setState(() {
+                      _type = v ?? AccountType.other;
+                      // 新增时类型决定默认活/死；用户手动改过则尊重手动值
+                      if (!_liquidManual) _liquid = _type.defaultLiquid;
+                    }),
                   ),
                 ),
               ],
+            ),
+            const SizedBox(height: 12),
+            // 活钱/死钱：总览与统计分开计算
+            Row(
+              children: [
+                SegmentedButton<bool>(
+                  segments: const [
+                    ButtonSegment(
+                      value: true,
+                      label: Text('活钱'),
+                      icon: Icon(Icons.water_drop_outlined, size: 16),
+                    ),
+                    ButtonSegment(
+                      value: false,
+                      label: Text('死钱'),
+                      icon: Icon(Icons.lock_outline, size: 16),
+                    ),
+                  ],
+                  selected: {_liquid},
+                  showSelectedIcon: false,
+                  style: const ButtonStyle(
+                    visualDensity: VisualDensity.compact,
+                  ),
+                  onSelectionChanged: (s) => setState(() {
+                    _liquid = s.first;
+                    _liquidManual = true;
+                  }),
+                ),
+              ],
+            ),
+            const SizedBox(height: 4),
+            Text(
+              '活钱 = 随时能花的（银行卡/零钱通）；死钱 = 短期取不出来的（基金/币安）',
+              style: TextStyle(color: Colors.grey.shade500, fontSize: 12),
             ),
             const SizedBox(height: 12),
             TextField(
@@ -953,6 +1005,7 @@ class _AccountDialogState extends State<_AccountDialog> {
                 type: _type,
                 sortOrder: widget.account?.sortOrder ?? 0,
                 isActive: isEdit ? _active : true,
+                isLiquid: _liquid,
                 channelKeywords: _channelKeywords.text.trim(),
                 openingDate:
                     _openingEnabled && _openingDate != null && oc.isNotEmpty

@@ -85,11 +85,12 @@ void main() {
 
   group('金额解析', () {
     test('千分位/货币符号/括号负数', () {
-      final csv = '日期,金额,备注\n'
-          '2026-09-01,"1,234.56",千分位\n'
-          '2026-09-02,¥200.00,人民币符号\n'
-          '2026-09-03,"(88.00)",括号负数\n'
-          '2026-09-04,-45.5,负号\n';
+      // 表头需 >=5 列（v1.6.6 防叙述行误判的 gate），补足空列
+      final csv = '日期,金额,交易对方,商品说明,渠道\n'
+          '2026-09-01,"1,234.56",A,千分位,\n'
+          '2026-09-02,¥200.00,A,人民币符号,\n'
+          '2026-09-03,"(88.00)",A,括号负数,\n'
+          '2026-09-04,-45.5,A,负号,\n';
       final r = CsvImporter.parse(csv);
       expect(r.txns.length, 4);
       expect(r.txns[0].amountCents, 123456);
@@ -100,13 +101,14 @@ void main() {
     });
 
     test('日期格式兼容 yyyy/M/d', () {
-      final csv = '日期,金额\n2026/9/1,10.00\n';
+      final csv = '日期,金额,交易对方,商品说明,渠道\n2026/9/1,10.00,A,B,\n';
       final r = CsvImporter.parse(csv);
       expect(r.txns.single.date, '2026-09-01');
     });
 
     test('引号内逗号不拆列', () {
-      final csv = '日期,摘要,金额\n2026-09-01,"超市,便利店",10.00\n';
+      final csv = '日期,摘要,金额,交易对方,渠道\n'
+          '2026-09-01,"超市,便利店",10.00,A,\n';
       final r = CsvImporter.parse(csv);
       expect(r.txns.length, 1);
       expect(r.txns.single.description, '超市,便利店');

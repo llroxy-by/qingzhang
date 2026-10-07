@@ -36,6 +36,7 @@ CREATE TABLE IF NOT EXISTS accounts(
   name TEXT NOT NULL, emoji TEXT NOT NULL DEFAULT '💳',
   type TEXT NOT NULL DEFAULT 'bank', sort_order INTEGER NOT NULL DEFAULT 0,
   is_active INTEGER NOT NULL DEFAULT 1,
+  is_liquid INTEGER NOT NULL DEFAULT 1,
   channel_keywords TEXT NOT NULL DEFAULT '',
   opening_date TEXT, opening_cents INTEGER,
   updated_at INTEGER NOT NULL DEFAULT 0, deleted INTEGER NOT NULL DEFAULT 0
@@ -65,11 +66,20 @@ CREATE TABLE IF NOT EXISTS trips(
   created_at INTEGER NOT NULL DEFAULT 0,
   updated_at INTEGER NOT NULL DEFAULT 0, deleted INTEGER NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS debts(
+  id TEXT PRIMARY KEY, user_id INTEGER NOT NULL,
+  name TEXT NOT NULL, direction TEXT NOT NULL DEFAULT 'owe',
+  amount_cents INTEGER NOT NULL, date TEXT NOT NULL,
+  note TEXT NOT NULL DEFAULT '', settled INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL DEFAULT 0,
+  updated_at INTEGER NOT NULL DEFAULT 0, deleted INTEGER NOT NULL DEFAULT 0
+);
 CREATE INDEX IF NOT EXISTS idx_accounts_uid ON accounts(user_id);
 CREATE INDEX IF NOT EXISTS idx_snapshots_uid ON snapshots(user_id);
 CREATE INDEX IF NOT EXISTS idx_entries_uid ON snapshot_entries(user_id);
 CREATE INDEX IF NOT EXISTS idx_txns_uid ON txns(user_id);
 CREATE INDEX IF NOT EXISTS idx_trips_uid ON trips(user_id);
+CREATE INDEX IF NOT EXISTS idx_debts_uid ON debts(user_id);
 CREATE INDEX IF NOT EXISTS idx_tokens_uid ON tokens(user_id);
 `);
 
@@ -82,6 +92,18 @@ try {
   }
 } catch (e) {
   console.log('[migrate] 检查 users 列失败(忽略):', e.message);
+}
+
+// 老库兼容：accounts 表补 is_liquid 列（活钱/死钱，投资类默认死钱）
+try {
+  const acols = db.prepare('PRAGMA table_info(accounts)').all();
+  if (!acols.some((c) => c.name === 'is_liquid')) {
+    db.exec('ALTER TABLE accounts ADD COLUMN is_liquid INTEGER NOT NULL DEFAULT 1');
+    db.exec("UPDATE accounts SET is_liquid = 0 WHERE type = 'invest'");
+    console.log('[migrate] accounts.is_liquid 列已补');
+  }
+} catch (e) {
+  console.log('[migrate] 检查 accounts 列失败(忽略):', e.message);
 }
 
 // ---------------- 工具 ----------------
@@ -128,7 +150,7 @@ function readBody(req) {
 // 传入行对象 → 构造 UPDATE/INSERT
 const TABLES = {
   accounts: {
-    cols: ['name', 'emoji', 'type', 'sort_order', 'is_active', 'channel_keywords', 'opening_date', 'opening_cents'],
+    cols: ['name', 'emoji', 'type', 'sort_order', 'is_active', 'is_liquid', 'channel_keywords', 'opening_date', 'opening_cents'],
   },
   snapshots: {
     cols: ['date', 'created_at'],
@@ -142,6 +164,9 @@ const TABLES = {
   trips: {
     cols: ['name', 'start_date', 'end_date', 'created_at'],
   },
+  debts: {
+    cols: ['name', 'direction', 'amount_cents', 'date', 'note', 'settled', 'created_at'],
+  },
 };
 
 function rowToMap(r) {
@@ -153,6 +178,12 @@ function selectAll(table, userId) {
   const stmt = db.prepare(`SELECT * FROM ${table} WHERE user_id = ?`);
   return stmt.all(userId);
 }
+
+// 老客户端 payload 缺新列时按此补默认值（避免 NOT NULL 约束失败）
+const COL_DEFAULTS = {
+  accounts: { is_liquid: 1 },
+  debts: { direction: 'owe', amount_cents: 0, note: '', settled: 0, date: '' },
+};
 
 // 被改名表 → 引用它的（表, 列）：换 id 后同步重写这些引用
 const REFERRERS = {
@@ -175,6 +206,7 @@ function genId() {
  */
 function mergeRows(table, userId, rows, renames) {
   const meta = TABLES[table];
+  const defaults = COL_DEFAULTS[table] || {};
   const idCols = meta.cols.join(', ');
   const ph = meta.cols.map(() => '?').join(', ');
   const selectStmt = db.prepare(`SELECT updated_at FROM ${table} WHERE id = ? AND user_id = ?`);
@@ -186,8 +218,13 @@ function mergeRows(table, userId, rows, renames) {
   );
   let merged = 0;
   let renamed = 0;
-  for (const r of rows) {
-    if (!r || typeof r.id !== 'string' || typeof r.updated_at !== 'number') continue;
+  for (const r0 of rows) {
+    if (!r0 || typeof r0.id !== 'string' || typeof r0.updated_at !== 'number') continue;
+    // 老客户端缺列 → 补默认值（accounts.is_liquid 等），兼容跨版本同步
+    const r = { ...r0 };
+    for (const c of meta.cols) {
+      if (r[c] === undefined && defaults[c] !== undefined) r[c] = defaults[c];
+    }
     const existing = selectStmt.get(r.id, userId);
     const vals = meta.cols.map((c) => r[c] ?? null);
     if (!existing || (r.updated_at ?? 0) >= existing.updated_at) {

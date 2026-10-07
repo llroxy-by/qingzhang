@@ -67,6 +67,11 @@ async function main() {
       snapshot_entries: [{ id: 'se-1', snapshot_id: 'snap-1', account_id: 'acc-1', amount_cents: 123456, updated_at: 1000, deleted: 0 }],
       txns: [{ id: 'txn-1', date: '2026-09-07', description: '美团外卖', amount_cents: -2500, channel: '零钱', source: 'alipay', category: 'food', account_id: 'acc-1', trip_id: null, created_at: 50, updated_at: 1000, deleted: 0 }],
       trips: [],
+      // 欠债（v1.7.6）：vec 表随 TABLES 一起同步
+      debts: [
+        { id: 'debt-1', name: '老王', direction: 'owe', amount_cents: 50000, date: '2026-09-01', note: '吃饭', settled: 0, created_at: 60, updated_at: 1000, deleted: 0 },
+        { id: 'debt-2', name: '小李', direction: 'lend', amount_cents: 20000, date: '2026-09-03', note: '', settled: 0, created_at: 60, updated_at: 1000, deleted: 0 },
+      ],
     }),
   });
   check('推送成功', push1.status === 200 && push1.body.merged.accounts === 1, push1.body);
@@ -76,6 +81,16 @@ async function main() {
   check('GET 含 account', g1.body.accounts.length === 1 && g1.body.accounts[0].name === '招行卡');
   check('GET 含 txn', g1.body.txns.length === 1 && g1.body.txns[0].amount_cents === -2500);
   check('GET 含 entry', g1.body.snapshot_entries.length === 1);
+  check('GET 含 debts 两条', g1.body.debts.length === 2 && g1.body.debts[0].direction === 'owe' && g1.body.debts[0].amount_cents === 50000);
+  // 老客户端 payload（无 is_liquid 列）也能合并：默认补 is_liquid=1，不 500
+  const oldPush = await api(`/api/data/${uid}`, {
+    method: 'POST', token: tokenA,
+    body: j({
+      accounts: [{ id: 'acc-2', name: '老版账户', emoji: '💳', type: 'bank', sort_order: 2, is_active: 1, channel_keywords: '', updated_at: 900, deleted: 0 }],
+      txns: [], trips: [],
+    }),
+  });
+  check('老版 payload 缺 is_liquid 兼容', oldPush.status === 200, oldPush.body);
 
   console.log('== 7. 冲突合并 last-write-wins ==');
   await api(`/api/data/${uid}`, {
